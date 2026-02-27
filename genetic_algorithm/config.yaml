@@ -1,0 +1,27 @@
+seed: 0
+
+taichi:
+  arch: cpu
+  init:
+    device_memory_GB: 16.0
+    debug: False
+
+simulator:
+  n_sims: 10
+  sim_steps: 1000
+  learning_steps: 1
+  dt: 3e-3
+  eps: 1e-5
+  springA: 0.18
+  springK: 15000.0
+  ground_height: 0.02
+  gravity: 10.0
+  friction: 0.98
+  restitution: 0.1
+  drag_damping: 14.0
+  nn_hidden_size: 128
+  nn_cpg_count: 6
+  cpg_omega: 15.0
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  learning_rate: 7e-3

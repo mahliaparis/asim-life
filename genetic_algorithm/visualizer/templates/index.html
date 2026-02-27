@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+</head>
+<body>
+  <div id="container">
+    <canvas id="canvas"></canvas>
+    <div id="controls">
+      <div class="control-group">
+        <div class="value-display">FPS: <span id="actualFps">--</span></div>
+        <div class="value-display">Step: <span id="stepDisplay">0</span></div>
+        <div class="value-display">Gen: <span id="genDisplay">0</span></div>
+        <div class="value-display">Best: <span id="bestDisplay">0.00</span></div>
+        <div class="value-display">Mean: <span id="meanDisplay">0.00</span></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+let nSims = 10;
+let laneSpacing = 1.6;
+let finishX = 3.0;
+
+let positionsAll = [];      // [nSims][81][2]
+let springsAll = [];        // [nSims][nSprings][2]
+let nMassesList = [];       // [nSims]
+let comX = [];              // [nSims]
+let ages = [];              // [nSims]
+let fitnesses = [];         // [nSims]
+
+let stepT = 0;
+let generation = 0;
+let bestFitness = 0;
+let meanFitness = 0;
+
+const actualFpsDisplay = document.getElementById('actualFps');
+const stepDisplay = document.getElementById('stepDisplay');
+const genDisplay = document.getElementById('genDisplay');
+const bestDisplay = document.getElementById('bestDisplay');
+const meanDisplay = document.getElementById('meanDisplay');
+
+function resizeCanvas() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+function laneColor(i) {
+  const palette = ['#FFD166', '#06D6A0', '#118AB2', '#EF476F', '#9B5DE5', '#F15BB5', '#00BBF9', '#FEE440'];
+  return palette[i % palette.length];
+}
+
+/**
+ * Track mapping: x in [0, finishX] spans full width.
+ * This makes the finish line on the right and start on the left.
+ */
+function trackToScreen(x, y) {
+  const left = 70, right = 70, top = 50, bottom = 60;
+  const usableW = canvas.width - left - right;
+  const usableH = canvas.height - top - bottom;
+
+  const totalHWorld = Math.max(1.0, (nSims - 1) * laneSpacing + 1.0);
+  const scaleY = usableH / totalHWorld;
+  const scaleX = usableW / finishX;
+
+  return {
+    x: left + x * scaleX,
+    y: canvas.height - bottom - y * scaleY
+  };
+}
+
+/**
+ * Robot shape mapping: keep robot body visible by centering it near left of lane.
+ * We subtract COMx so shape doesn’t drift offscreen.
+ */
+function robotToScreen(localX, localY, laneYWorld) {
+  const anchorX = 0.35; // keep robot body around x=0.35 on the track
+  return trackToScreen(anchorX + localX, laneYWorld + localY);
+}
+
+function drawGround() {
+  ctx.fillStyle = '#c5d5e0';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // finish line
+  const fx = trackToScreen(finishX, 0).x;
+  ctx.strokeStyle = '#111';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(fx, 0);
+  ctx.lineTo(fx, canvas.height);
+  ctx.stroke();
+
+  ctx.fillStyle = '#111';
+  ctx.font = 'bold 16px Arial';
+  ctx.fillText('FINISH', fx - 35, 30);
+
+  for (let i = 0; i < nSims; i++) {
+    const yLane = i * laneSpacing + 0.02;
+    const yScreen = trackToScreen(0, yLane).y;
+
+    // lane line
+    ctx.strokeStyle = '#4a6b80';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, yScreen);
+    ctx.lineTo(canvas.width, yScreen);
+    ctx.stroke();
+
+    // ticks
+    ctx.strokeStyle = '#3d5a6b';
+    ctx.lineWidth = 2;
+    for (let x = 0; x <= finishX; x += 0.5) {
+      const sx = trackToScreen(x, yLane).x;
+      ctx.beginPath();
+      ctx.moveTo(sx, yScreen - 6);
+      ctx.lineTo(sx, yScreen + 6);
+      ctx.stroke();
+    }
+  }
+}
+
+function drawRobots() {
+  if (!positionsAll || positionsAll.length === 0) return;
+
+  for (let sim = 0; sim < nSims; sim++) {
+    const posFull = positionsAll[sim];
+    if (!posFull) continue;
+
+    const nm = (nMassesList[sim] !== undefined) ? nMassesList[sim] : posFull.length;
+    const pos = posFull.slice(0, nm);
+
+    const springs = springsAll[sim] || [];
+
+    const laneY = sim * laneSpacing;
+
+    // compute COMx (for progress marker) and also for centering the body
+    const cx = (comX[sim] !== undefined) ? comX[sim] : pos.reduce((a,p)=>a+p[0],0)/pos.length;
+
+    // ----- draw robot body (centered) -----
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2.5;
+
+    for (let s = 0; s < springs.length; s++) {
+      const sp = springs[s];
+      const p1 = pos[sp[0]];
+      const p2 = pos[sp[1]];
+      if (!p1 || !p2) continue;
+
+      // local coordinates relative to COMx (keep shape centered)
+      const a = robotToScreen(p1[0] - cx, p1[1], laneY);
+      const b = robotToScreen(p2[0] - cx, p2[1], laneY);
+
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+
+    // masses
+    ctx.fillStyle = laneColor(sim);
+    for (let m = 0; m < pos.length; m++) {
+      const p = pos[m];
+      const sp = robotToScreen(p[0] - cx, p[1], laneY);
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 4.5, 0, 2 * Math.PI);
+      ctx.fill();
+    }
+
+    // ----- progress marker on track (actual race position) -----
+    const racer = trackToScreen(Math.max(0, Math.min(finishX, cx)), laneY + 0.02);
+    ctx.fillStyle = laneColor(sim);
+    ctx.beginPath();
+    ctx.arc(racer.x, racer.y, 8, 0, 2*Math.PI);
+    ctx.fill();
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // label: age + fitness
+    const age = (ages[sim] !== undefined) ? ages[sim] : 0;
+    const fit = (fitnesses[sim] !== undefined) ? fitnesses[sim] : 0.0;
+    ctx.fillStyle = '#111';
+    ctx.font = '12px Arial';
+    const labelPos = trackToScreen(0.05, laneY + 0.70);
+    ctx.fillText(`#${sim}  age=${age}  fit=${fit.toFixed(2)}`, labelPos.x, labelPos.y);
+  }
+}
+
+function draw() {
+  drawGround();
+  drawRobots();
+}
+
+function startStream() {
+  const es = new EventSource('/stream');
+
+  es.onmessage = (event) => {
+    if (!event.data) return;
+    const msg = JSON.parse(event.data);
+
+    if (msg.type === 'topology') {
+      nSims = msg.n_sims ?? nSims;
+      laneSpacing = msg.lane_spacing ?? laneSpacing;
+      finishX = msg.finish_x ?? finishX;
+    } else if (msg.type === 'step') {
+      positionsAll = msg.positions || [];
+      comX = msg.com_x || [];
+      ages = msg.ages || [];
+      fitnesses = msg.fitnesses || [];
+      nMassesList = msg.n_masses_list || [];
+      springsAll = msg.springs_all || [];
+
+      stepT = msg.t ?? 0;
+      generation = msg.generation ?? 0;
+      bestFitness = msg.best_fitness ?? 0;
+      meanFitness = msg.mean_fitness ?? 0;
+
+      stepDisplay.textContent = stepT;
+      genDisplay.textContent = generation;
+      bestDisplay.textContent = bestFitness.toFixed(2);
+      meanDisplay.textContent = meanFitness.toFixed(2);
+
+      if (msg.fps !== undefined) actualFpsDisplay.textContent = msg.fps.toFixed(0);
+
+      draw();
+    }
+  };
+
+  es.onerror = (err) => console.error('EventSource error:', err);
+}
+
+window.addEventListener('load', () => {
+  startStream();
+  draw();
+});
+</script>
+</body>
+</html>
